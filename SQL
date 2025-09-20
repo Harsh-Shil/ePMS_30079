@@ -1,0 +1,76 @@
+-- Create the users table to store user information and roles
+CREATE TABLE IF NOT EXISTS users (
+    user_id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    role VARCHAR(20) NOT NULL CHECK (role IN ('Manager', 'Employee'))
+);
+
+-- Create the goals table to store performance goals
+-- This table links a goal to both the assigning manager and the employee
+CREATE TABLE IF NOT EXISTS goals (
+    goal_id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    due_date DATE,
+    status VARCHAR(20) NOT NULL CHECK (status IN ('Draft', 'In Progress', 'Completed', 'Cancelled')),
+    manager_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+    employee_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- Create the tasks table for employees to log their progress
+-- Each task is linked to a specific goal
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id SERIAL PRIMARY KEY,
+    goal_id INTEGER REFERENCES goals(goal_id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    is_approved BOOLEAN DEFAULT FALSE
+);
+
+-- Create the feedback table for managers to provide written feedback
+-- Feedback can be manual or automated via a trigger
+CREATE TABLE IF NOT EXISTS feedback (
+    feedback_id SERIAL PRIMARY KEY,
+    goal_id INTEGER REFERENCES goals(goal_id) ON DELETE CASCADE,
+    manager_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+    employee_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+    feedback_text TEXT NOT NULL,
+    feedback_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SQL to create the automated feedback trigger function
+-- This function is executed when a goal's status is updated
+CREATE OR REPLACE FUNCTION log_automated_feedback()
+RETURNS TRIGGER AS $$
+DECLARE
+    goal_title TEXT;
+BEGIN
+    -- Check if the goal status has changed to 'Completed' from a different status
+    IF NEW.status = 'Completed' AND OLD.status != 'Completed' THEN
+        -- Get the title of the completed goal
+        SELECT title INTO goal_title FROM goals WHERE goal_id = NEW.goal_id;
+        
+        -- Insert an automated feedback entry into the feedback table
+        INSERT INTO feedback (goal_id, manager_id, employee_id, feedback_text)
+        VALUES (
+            NEW.goal_id,
+            NEW.manager_id,
+            NEW.employee_id,
+            'Automated feedback: Goal "' || goal_title || '" has been marked as Completed. Great job!'
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- SQL to create the trigger on the goals table
+-- It calls the function whenever a row in goals is updated
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'goal_status_change') THEN
+        CREATE TRIGGER goal_status_change
+        AFTER UPDATE OF status ON goals
+        FOR EACH ROW
+        EXECUTE FUNCTION log_automated_feedback();
+    END IF;
+END
+$$;
